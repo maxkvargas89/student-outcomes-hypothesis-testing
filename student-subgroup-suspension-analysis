@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Nov 11 10:12:01 2022
+
+@author: max
+"""
+
+# import packages
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pingouin as pg
+from scipy.stats import linregress
+from scipy import stats
+from scipy.stats import boxcox
+
+# import data from crdc dataset
+suspensions = pd.read_csv('/Users/max/Library/Mobile Documents/com~apple~CloudDocs/Data/2017-18 Public-Use Files/Data/SCH/CRDC/CSV/Suspensions.csv',low_memory=False)
+enrollments = pd.read_csv('/Users/max/Library/Mobile Documents/com~apple~CloudDocs/Data/2017-18 Public-Use Files/Data/SCH/CRDC/CSV/Enrollment.csv',low_memory=False)
+file_encoding = 'utf8'  # decode error fix for utf-8
+input_fd = open('/Users/max/Library/Mobile Documents/com~apple~CloudDocs/Data/2017-18 Public-Use Files/Data/SCH/CRDC/CSV/School_Characteristics.csv', encoding=file_encoding, errors = 'backslashreplace')
+school_characteristics = pd.read_csv(input_fd,low_memory=False)
+
+# select fields for analyis
+suspensions_fields = ['COMBOKEY','SCH_DISCWODIS_ISS_BL_M','SCH_DISCWODIS_ISS_BL_F','SCH_DISCWODIS_ISS_WH_M','SCH_DISCWODIS_ISS_WH_F','SCH_DISCWDIS_ISS_IDEA_BL_M','SCH_DISCWDIS_ISS_IDEA_BL_F','SCH_DISCWDIS_ISS_IDEA_WH_M','SCH_DISCWDIS_ISS_IDEA_WH_F']
+enrollments_fields = ['COMBOKEY','SCH_ENR_BL_M','SCH_ENR_BL_F','SCH_ENR_WH_M','SCH_ENR_WH_F','SCH_IDEAENR_BL_M','SCH_IDEAENR_BL_F','SCH_IDEAENR_WH_M','SCH_IDEAENR_WH_F']
+characteristics_fields = ['COMBOKEY','LEA_STATE','LEA_NAME','SCH_NAME','SCH_GRADE_G09','SCH_GRADE_G10','SCH_GRADE_G11','SCH_GRADE_G12','SCH_STATUS_SPED','SCH_STATUS_MAGNET','SCH_STATUS_CHARTER','SCH_STATUS_ALT']
+
+# subset data with fields for anlysis 
+suspensions = suspensions[suspensions_fields]
+enrollments = enrollments[enrollments_fields]
+school_characteristics = school_characteristics[characteristics_fields]
+suspensions_rawdata = school_characteristics.merge(enrollments,on='COMBOKEY').merge(suspensions,on='COMBOKEY')
+
+# clean data
+reserve_codes = [-3,-5,-6,-8,-9,-11]
+reserve_codes_replace = [0,0,0,0,0,0]
+suspensions_rawdata.replace(reserve_codes,reserve_codes_replace,inplace=True)
+
+# calculate denominator for metric
+suspensions_rawdata['white_enrollment'] = suspensions_rawdata.SCH_ENR_WH_M + suspensions_rawdata.SCH_ENR_WH_F
+suspensions_rawdata['black_enrollment'] = suspensions_rawdata.SCH_ENR_BL_M + suspensions_rawdata.SCH_ENR_BL_F
+
+# calculate numerator for metric
+suspensions_rawdata['white_suspensions'] = suspensions_rawdata.SCH_DISCWODIS_ISS_WH_M + suspensions_rawdata.SCH_DISCWODIS_ISS_WH_F + suspensions_rawdata.SCH_DISCWDIS_ISS_IDEA_WH_M + suspensions_rawdata.SCH_DISCWDIS_ISS_IDEA_WH_F
+suspensions_rawdata['black_suspensions'] = suspensions_rawdata.SCH_DISCWODIS_ISS_BL_M + suspensions_rawdata.SCH_DISCWODIS_ISS_BL_F + suspensions_rawdata.SCH_DISCWDIS_ISS_IDEA_BL_M + suspensions_rawdata.SCH_DISCWDIS_ISS_IDEA_BL_F
+
+# calculate metric
+suspensions_rawdata['white_suspensions_rate'] = suspensions_rawdata.white_suspensions / suspensions_rawdata.white_enrollment
+suspensions_rawdata['black_suspensions_rate'] = suspensions_rawdata.black_suspensions / suspensions_rawdata.black_enrollment
+
+# calculate demographic indicator
+suspensions_rawdata['blackwhite_enrollment_factor'] = suspensions_rawdata.black_enrollment / suspensions_rawdata.white_enrollment
+suspensions_rawdata['blackwhite_enrollment_factor'] = suspensions_rawdata['blackwhite_enrollment_factor'].where(~np.isinf(suspensions_rawdata['blackwhite_enrollment_factor']),pd.NA)
+
+# clean calculations
+suspensions_rawdata.replace([np.inf,-np.inf],np.nan,inplace=True)
+suspensions_rawdata.dropna(inplace=True)
+
+# filter data for only high schools 
+suspensions_hs_rawdata = suspensions_rawdata[(suspensions_rawdata.SCH_GRADE_G09 == 'Yes') & (suspensions_rawdata.SCH_GRADE_G10 == 'Yes') & (suspensions_rawdata.SCH_GRADE_G11 == 'Yes') & (suspensions_rawdata.SCH_GRADE_G12 == 'Yes')]
+
+# remove outliers
+suspensions_hs_rawdata = suspensions_hs_rawdata[(np.abs(stats.zscore(suspensions_hs_rawdata.white_suspensions_rate,nan_policy='omit')) < 3)]
+suspensions_hs_rawdata = suspensions_hs_rawdata[(np.abs(stats.zscore(suspensions_hs_rawdata.black_suspensions_rate,nan_policy='omit')) < 3)]
+
+# subset data with fields for analyiss
+suspensions_hs_rawdata = suspensions_hs_rawdata[['COMBOKEY','LEA_STATE','LEA_NAME','SCH_NAME','SCH_STATUS_SPED','SCH_STATUS_MAGNET','SCH_STATUS_CHARTER','SCH_STATUS_ALT','blackwhite_enrollment_factor','white_suspensions_rate','black_suspensions_rate']]
+suspensions_hs_transdata = suspensions_hs_rawdata.melt(id_vars = ['COMBOKEY','LEA_STATE','LEA_NAME','SCH_NAME','SCH_STATUS_SPED','SCH_STATUS_MAGNET','SCH_STATUS_CHARTER','SCH_STATUS_ALT','blackwhite_enrollment_factor'],value_vars = ['white_suspensions_rate','black_suspensions_rate'],var_name = 'ethnicity',value_name='suspension_rate')
+
+# Sanity Check
+
+print(suspensions_rawdata[['COMBOKEY','white_enrollment','black_enrollment']].sort_values('white_enrollment').head(10))
+
+# Background: Suspensions, especially out-of-school suspensions, result in lost learning, which is never entirely recovered.  Many times this lost learning compounds into failure to graduate on-time or failure to graduate at all (cite source).  
+# Background (Cont): Graduating has immense economic benefits and individuals who fail to graduate are much more likely to be arrested and join the school-to-prison pipeline (cite source). 
+# Question: Are black and white high school students suspended in the same way?
+
+# At what rate are black and white high school students suspended?
+
+sns.set_style('dark')
+sns.axes_style('darkgrid')
+sns.set_context('paper')
+ratecomp = sns.catplot(data=suspensions_hs_transdata,x='ethnicity',y='suspension_rate',kind='bar',errorbar=None,palette='colorblind')
+ratecomp.fig.suptitle('Out-of-School Suspension Rates')
+plt.show()
+print(suspensions_hs_transdata.groupby('ethnicity').suspension_rate.mean())
+
+# We see that black high school students are nearly twice as likely to be suspended out-of-school than white high school students, on average per school.
+# Do the rate distributions differ for black and white high school students?
+
+black_rates = suspensions_hs_transdata[suspensions_hs_transdata['ethnicity']=='black_suspensions_rate']['suspension_rate']
+white_rates = suspensions_hs_transdata[suspensions_hs_transdata['ethnicity']=='white_suspensions_rate']['suspension_rate']
+plt.hist(black_rates,bins=40,range=(0,1),alpha=0.8,density=True,histtype='bar',label='black')
+plt.hist(white_rates,bins=40,range=(0,1),alpha=0.4,density=True,histtype='bar',label='white')
+plt.legend()
+plt.xlabel('out-of-school suspension rate')
+plt.ylabel('percent of schools')
+plt.show()
+
+# We see that for both black and white high school students suspension rates mostly fall between 0% and 2.5%.  
+# For white high school students there is an almost an exponential decay trend between 2.5% and 20%.  However, for black high school students rates range almost uniformally from 2.5% to 42.5%.
+# Do high suspension rates occur in the sames schools for each student group?
+
+plt.plot('white_suspensions_rate','black_suspensions_rate',data=suspensions_hs_rawdata,linestyle='',marker='o',markersize=0.7,alpha=0.5)
+plt.xlabel('White Suspension Rate')
+plt.ylabel('Black Suspension Rate')
+plt.title('Student Group Rates Per School')
+plt.ylim(0, 1)
+plt.xlim(0, 1)
+plt.show()
+
+# We see a bit of overlapping that makes it hard to make a conclusion.  However, if we take a random sample of schools the picture is clearer.
+
+suspensions_hs_rawdata_sample = suspensions_hs_rawdata.sample(n=1000, random_state=1)
+plt.plot('white_suspensions_rate','black_suspensions_rate',data=suspensions_hs_rawdata_sample,linestyle='',marker='o',markersize=0.7,alpha=0.5)
+plt.xlabel('White Suspension Rate')
+plt.ylabel('Black Suspension Rate')
+plt.title('Student Group Rates Per School')
+plt.ylim(0, 1)
+plt.xlim(0, 1)
+plt.show()
+
+# We can see a positive linear trend. As white high school student suspension rates so do black high school student rates.  However, the trendline is somewhat steep indicating that black rates are higher most of the time.
+# Are black high school students suspended at a different rate?
+# Before we test, first are suspension rates normally distributed?
+plt.hist(suspensions_hs_transdata.suspension_rate,bins=40,range=(0,1),alpha=0.8,density=True,histtype='bar',label='Suspension Rates')
+plt.show()
+
+# The distribution appears to be exponential.  
+# We could try to force it normal like below.  However, N is well over 500.  I believe we can sample and use a ttest.
+func_suspension_rate = np.log(suspensions_hs_transdata.suspension_rate)
+print(func_suspension_rate.sort_values(ascending=False))
+plt.hist(func_suspension_rate,bins=40,range=(0,1),alpha=0.8,density=True,histtype='bar',label='Suspension Rates')
+plt.title('Suspension Rates with Function')
+plt.show() 
+
+# stratified random sample by state (so we can get a state representative sample)
+state_strat_sample = suspensions_hs_rawdata.groupby('LEA_STATE').sample(frac=0.1,random_state=2)
+
+# ttest
+alpha = 0.01
+black = state_strat_sample.black_suspensions_rate
+white = state_strat_sample.white_suspensions_rate
+ttest = pg.ttest(x=black,y=white,paired=False,alternative='greater')
+print(ttest['p-val'])
+
+# p-value < alpha: reject the null hypothesis
+# So, black high school students have statistically higher suspension rate than white high school students.
+
+ 
